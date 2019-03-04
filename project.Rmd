@@ -1,0 +1,364 @@
+---
+title: "Project"
+output:
+  html_document:
+    df_print: paged
+---
+
+<!--
+
+# project assignment
+
+One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants.
+
+
+# What you should submit
+
+The goal of your project is to predict the manner in which they did the exercise. This is the "classe" variable in the training set. You may use any of the other variables to predict with. You should create a report describing how you built your model, how you used cross validation, what you think the expected out of sample error is, and why you made the choices you did. You will also use your prediction model to predict 20 different test cases.
+Peer Review Portion
+
+Your submission for the Peer Review portion should consist of a link to a Github repo with your R markdown and compiled HTML file describing your analysis. Please constrain the text of the writeup to < 2000 words and the number of figures to be less than 5. It will make it easier for the graders if you submit a repo with a gh-pages branch so the HTML page can be viewed online (and you always want to make it easy on graders :-).
+Course Project Prediction Quiz Portion
+
+Apply your machine learning algorithm to the 20 test cases available in the test data above and submit your predictions in appropriate format to the Course Project Prediction Quiz for automated grading.
+Reproducibility
+
+Due to security concerns with the exchange of R code, your code will not be run during the evaluation by your classmates. Please be sure that if they download the repo, they will be able to view the compiled HTML version of your analysis.
+
+# Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+Data
+
+The training data for this project are available here:
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The test data are available here:
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+The data for this project come from this source: http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har. If you use the document you create for this class for any purpose please cite them as they have been very generous in allowing their data to be used for this kind of assignment.
+-->
+
+# intro
+
+This data sets are the result of a body sensor data collection by PUC-RIO researchers. The objective is to identify the final 20 classes in the data.test subset.
+
+# data
+
+The data is already split into train and test, where test data lacks the classes for it observations. This requires some detailed analysis before the final results.
+
+```{r}
+# load data
+data.test <- read.csv("pml-testing.csv")
+
+data.train <- read.csv("pml-training.csv")
+
+# load libs
+library(caret) # for modelling
+library(ggplot2) # for graphs
+library(dplyr) # some wrangling
+library(corrplot) # correlation matrix
+```
+
+## data cleaning and compression
+
+The number of variables are overwhelming while the number of NAs is prohibitive. Here we shall reduce the number of variables in order to achieve a more tidy data and then, perform data compression via PCA.
+
+The following will be done:
+
+- Variable with more than 0% of NAs will be removed
+- Categorical and Numeric variables will be split up
+
+This second approach is useful for models that don't deal very well with factors.
+
+Also, for better performance I will subsample the data.train in a smaller, but representative, dataset.
+
+```{r}
+# subsample data.train for better performance
+s <- sample(nrow(data.train), 1e4)
+
+data.train <- data.train[s,]
+
+# identify cols with too much nas and remove them
+s <- sapply(data.train, function(t) {
+	sum(is.na(t)) / length(t)
+	})
+
+s <- which(s > 0)
+
+data.train <- data.train[, c(-s, -1)]
+	# I also removed the variable X since it was causing trouble to some models
+
+# split dataframe into categorical and numeric
+s <- sapply(data.train, is.numeric)
+
+data.train.cat <- data.train[, !s] # categorical
+data.train.num <- data.train[, s] # numerical
+
+# do it as well with the test data
+s <- intersect(names(data.train),
+	       names(data.test))
+
+data.test <- data.test[, s]
+
+s <- sapply(data.test, is.numeric)
+
+data.test.cat <- data.test[, !s]
+data.test.num <- data.test[, s]
+```
+
+## exploratory analysis
+
+We are looking for some correlation and classification potential for each variable. PCA, as data compression tool, is very useful for this very analysis. But first, let us explore the raw data.
+
+cor and corrplot are useful for such visualization. I will also reduce the correlations to a cutoff of .6 due to the overwhelming number of variables.
+
+```{r}
+# correlation matrix
+c <- cor(data.train.num)
+
+s <- findCorrelation(x = c, cutoff = .6)
+
+corrplot(c[s,s],
+	 type = "lower",
+	 method = "color",
+	 diag = FALSE,
+	 order = "hclust")
+```
+
+The correlation matrices suggest that some variables are highly correlated (both positively or negatively) while others are nearly independent.
+
+```{r}
+# convert data into pca
+data.train.pca <- prcomp(data.train.num, scale = TRUE)
+
+# evaluate variability
+data.frame(pca = colnames(data.train.pca$x),
+	   var = data.train.pca$sdev**2 / sum(data.train.pca$sdev**2),
+	   acc = cumsum(data.train.pca$sdev**2 / sum(data.train.pca$sdev**2)))
+
+```
+
+The PCA as unable to compress the data efficiently and let too much variation around with 90% of the variation around PC20 (of 55). But PCA still can be used for both the model and visualization.
+
+```{r}
+qplot(data = data.frame(data.train.pca$x),
+      x = PC1,
+      y = PC2,
+      colour = data.train.cat$user_name,
+      main = "PCA 1 and 2 visualization")
+```
+
+PCA has found some segmentation within the data, it was able to segment the data according the the user, but not according to the activity.
+
+
+# modelling
+
+Let us create a model. Here we have the the numeric and categorical data and the PCA version of the raw data. In this first approach, let's use PCA and raw data to create a simple but interesting multivariate linear model.
+
+```{r}
+# merge num and classe into one dataframe
+data <- cbind(data.frame(data.train.num),
+      classe = data.train.cat$classe)
+
+s <- createDataPartition(data$raw_timestamp_part_1,
+			 p = .5,
+			 list = FALSE)
+
+# create a linear model
+model.ln <- lm(as.numeric(classe) ~ .,
+	       data = data[s, ])
+
+summary(model.ln)
+
+qqnorm(model.ln$residuals)
+```
+
+Our first model has a good R², so probably it will be good for predictions as well. With the num data, we can evaluate how the variables behaved within the model:
+
+* some variables have high p-values and are not trustful for the model, they should be removed for a more parsimonious model.
+
+* The residuals look normal.
+
+```{r}
+p <- predict(model.ln,
+	     newdata = data[-s,])
+
+p <- factor(trunc(p, 0))
+
+# confusionMatrix(p,
+# 		factor(as.numeric(data[-s, ]$classe)))
+
+table(p)
+```
+
+
+This model is, of course for regression and our data is clearly for classification, which results in more classes than the actual ones. Although it has a great prediction power, over fitting is a problem, and the results are biased by the approximation. Let's create new models for classification only.
+
+For this section, the following approaches will be used:
+
+- Tree (an obvious choice for classification)
+- Boosting (because robustness matters)
+- Bagging (this data is tricky, I require a second opinion)
+- More (for robustness of the stack model)
+
+
+```{r}
+# create models
+
+## boosting
+model.boo <- train(classe ~ .,
+		   data = data[s,],
+		   method = "gbm",
+		   verbose = FALSE)
+
+## tree
+model.tree <- train(classe ~ .,
+		    data = data[s,],
+		    method = "rpart")
+
+## bag
+model.bag <- train(classe ~ .,
+		  data = data[s,],
+		  method = "treebag")
+
+## nearest schrunken centroids
+model.x <- train(classe ~ .,
+		  data = data[s,],
+		  method = "pam")
+
+```
+
+
+```{r results = 'hide'}
+## Due to pcaNNet noisy output, I have put him in a separate and silent chunk
+
+## neural network with feature extraction
+model.y <- train(classe ~ .,
+		  data = data[s,],
+		  method = "pcaNNet")
+```
+
+```{r}
+## random forest
+model.rf <- train(classe ~ .,
+		  data = data[s,],
+		  method = "ranger")
+
+# testing
+
+## boosting
+confusionMatrix(predict(model.boo, newdata = data[-s, ]),
+		data[-s, ]$classe)
+
+## tree
+confusionMatrix(predict(model.tree, newdata = data[-s, ]),
+		data[-s, ]$classe)
+
+## bag
+confusionMatrix(predict(model.bag, newdata = data[-s, ]),
+		data[-s, ]$classe)
+
+## more
+confusionMatrix(predict(model.x, newdata = data[-s, ]),
+		data[-s, ]$classe)
+
+confusionMatrix(predict(model.y, newdata = data[-s, ]),
+		data[-s, ]$classe)
+
+confusionMatrix(predict(model.rf, newdata = data[-s, ]),
+		data[-s, ]$classe)
+```
+
+Boosting, Bagging and Random Forest had the best results while PAM had the worst performance. This processing took some time to complete even with the main data set reduced to 1000 observations, this suggests that the entire dataset would require more computational power.
+
+Lets stack the models together for the final prediction. Since I do not have the true classes for validation, a consensus will be used.
+
+Here is the description of the following algorithm:
+
+- Create a new dataset of predictions (data.stack) using the test data (not the true test data, the subsample from train data).
+
+- Create a new classification model with data.stack. Since this is simpler and smaller than the original data, a high precision method like Random Forest will fit it.
+
+- Test it with a bootstrap of itself.
+
+- Build a test data set (test.stack) from the original models.
+
+- Predict the final answer with the stack model.
+
+```{r}
+# consensus model
+
+## stack data
+data.stack <- data.frame(boo = predict(model.boo,
+				       newdata = data[-s, ]),
+			 tree = predict(model.tree,
+				       newdata = data[-s, ]),
+			 bag = predict(model.bag,
+				       newdata = data[-s, ]),
+			 pam = predict(model.x,
+				       newdata = data[-s, ]),
+			 neural = predict(model.y,
+				       newdata = data[-s, ]),
+			 rf = predict(model.rf,
+				       newdata = data[-s, ]),
+			 classe = data[-s, ]$classe)
+
+## modelling
+model.final <- train(classe ~ .,
+		     data = data.stack,
+		     method = "rf")
+
+print(model.final)
+
+## testing
+s <- sample_n(data.stack,
+	      size = 1e3,
+	      replace = TRUE)
+
+confusionMatrix(predict(model.final,
+			newdata = s),
+		s$classe)
+
+# final prediciton
+test.stack <-  data.frame(boo = predict(model.boo,
+			       newdata = data.test.num),
+		     tree = predict(model.tree,
+		     	       newdata = data.test.num),
+		     bag = predict(model.bag,
+		     	       newdata = data.test.num),
+		     pam = predict(model.x,
+		     		newdata = data.test.num),
+		     neural = predict(model.y,
+		     		 newdata = data.test.num),
+		     rf = predict(model.rf,
+		     	     newdata = data.test.num)
+		)
+
+p <- predict(model.final,
+	     test.stack)
+
+data.frame(q = 1:20,
+	   ans = p)
+```
+
+Here are the final answers for the Quiz (confirmed by the quiz :).
+
+## Conclusions
+
+- Stacking was a powerful tool for prediction in such a setting. Although a powerful algorithm like Random Forest would be able to perform alone, the computational power required would be prohibitive. Instead, I used a combination of simpler methods and smaller dataset to achieve a better stacked final model.
+
+- Splitting numerical and categorical variables made model development much easier since most models are designed for numerical variables only. This also revealed that most of the categorical variables where unnecessary for the final model.
+
+- The final model was only trustful when the number of observations for training was over 10.000 which is nearly 10% of the total observations. Above that the gains where minimal.
+
+- Bootstrapping the training set for validation of the model also was a good measure of is power and robustness.
+
+- "Classification & Regression" models performed poorly while pure classification models were much better. This probably because the predicted variable was non-numerical, a similar limitation can be found in the linear model for classification, and most of the models don't deal very well with this. Even Random Forest 'rf' was unable to do a good output while 'ranger' was excellent.
+
+- Overfitting was a constant issue with excellent results in the training sets and poor results in the test and validation sets. Stacking was able to overcome it, but a better approach, with less variables, should be considered.
+
+- The out of sample error in the stacked model was minimal while in the original models it was critical. This is a curious case for stacked models.
